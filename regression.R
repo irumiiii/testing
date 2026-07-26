@@ -20,22 +20,81 @@ protein_data <- protein_data |>
                         "Transporte" = "transport",
                         "Outras" = "other"))
 
+
 #filter for 100 random datapoints for receptors
-receptor_data <- filter(protein_data, class == "receptor") |>
+receptor_100 <- filter(protein_data, class == "receptor") |>
   slice_sample(n = 100)
+
+receptor_data <- filter(protein_data, class == "receptor")
 #checking relationship between sequence length and molecular weight visually
-ggplot(receptor_data, aes(x = sequence_length, y = mw)) + 
+ggplot(receptor_100, aes(x = sequence_length, y = mw)) + 
   geom_point(alpha = 0.4) + 
   labs(x = "Sequence Length", y = "Molecular Weight", title = "Sequence Length vs MW")
 #as predicted, a positive correlation
 
 #I want to predict molecular weight given a particular value of sequence length
 #Predict molecular weight of receptor with sequence length 100 taking K = 4
-
 predicted_mw <- receptor_data |>
   mutate(diff = abs(100 - sequence_length)) |>
   slice_min(diff, n = 4) |>
   summarize(predicted = mean(mw)) |>
   pull()
-predicted_mw
+
+#split receptor data into training and testing groups
+receptor_split <- initial_split(receptor_data, prop = 0.75, strata = mw)
+receptor_train <- training(receptor_split)
+receptor_test <- testing(receptor_split)
+
+#Cross validation to choose K for a regression model
+#Set model specification
+receptor_model <- nearest_neighbor(weight_func = "rectangular", neighbors = tune()) |>
+  set_engine("kknn") |>
+  set_mode("regression") 
+
+#Preprocess data
+receptor_recipe <- recipe(mw~sequence_length, data = receptor_train) |>
+  step_scale(all_predictors()) |>
+  step_center(all_predictors()) 
+
+#Create split for 5-fold cross validation
+receptor_vfold <- vfold_cv(receptor_train, v = 5, strata = mw)
+
+#Create workflow
+receptor_workflow <- workflow() |>
+  add_recipe(receptor_recipe) |>
+  add_model(receptor_model)
+
+#Set candidate K values
+k_vals = tibble(neighbors = seq(from = 1, to = 100, by = 10))
+
+#Perform cross-validation and collect statistics
+receptor_results <- receptor_workflow |>
+  tune_grid(resamples = receptor_vfold, grid = k_vals) |>
+  collect_metrics()
+
+#Get K value with smallest RMSE
+receptor_min <- receptor_results |>
+  filter(.metric == "rmse") |>
+  slice_min(mean, n=1)
+
+#Make new model specification with proper K value
+receptor_best_model <- nearest_neighbor(weight_func = "rectangular", neighbors = 81) |>
+  set_engine("kknn") |>
+  set_mode("regression") 
+
+#Fit workflow on training data
+receptor_best_fit <- workflow() |>
+  add_recipe(receptor_recipe) |>
+  add_model(receptor_best_model) |>
+  fit(data = receptor_train)
+
+#Evaluate regression model on testing data
+receptor_summary <- receptor_best_fit |>
+  predict(receptor_test) |>
+  bind_cols(receptor_test) |>
+  metrics(truth = mw, estimate = .pred)
+
+
+
+
 
